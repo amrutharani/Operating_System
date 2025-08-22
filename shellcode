@@ -1,0 +1,118 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <pthread.h>
+
+#define MAX 1024
+#define DELIM " \t\r\n\a"
+
+void execute_command(char **args, int background);
+void *thread_exec(void *arg);
+void parse_pipe(char *line);
+
+int main() {
+    char line[MAX];
+
+    while(1) {
+        printf("myshell> ");
+        if (!fgets(line, MAX, stdin)) break;
+
+        // Remove newline
+        line[strcspn(line, "\n")] = 0;
+
+        // Exit command
+        if (strcmp(line, "exit") == 0) break;
+
+        // Check for pipe
+        if (strchr(line, '|')) {
+            parse_pipe(line);
+        } else {
+            int background = 0;
+            char *amp = strchr(line, '&');
+            if (amp) {
+                background = 1;
+                *amp = '\0';
+            }
+
+            char *args[MAX];
+            int i = 0;
+            char *token = strtok(line, DELIM);
+            while (token != NULL) {
+                args[i++] = token;
+                token = strtok(NULL, DELIM);
+            }
+            args[i] = NULL;
+
+            pthread_t tid;
+            pthread_create(&tid, NULL, thread_exec, args);
+            if (!background) pthread_join(tid, NULL);
+        }
+    }
+
+    return 0;
+}
+
+void *thread_exec(void *arg) {
+    char **args = (char **)arg;
+    if (fork() == 0) {
+        execvp(args[0], args);
+        perror("exec failed");
+        exit(1);
+    } else {
+        wait(NULL);
+    }
+    return NULL;
+}
+
+void parse_pipe(char *line) {
+    char *cmd1 = strtok(line, "|");
+    char *cmd2 = strtok(NULL, "|");
+
+    int fd[2];
+    pipe(fd);
+
+    if (fork() == 0) { // First command
+        dup2(fd[1], STDOUT_FILENO);
+        close(fd[0]);
+        close(fd[1]);
+
+        char *args1[MAX];
+        int i = 0;
+        char *token = strtok(cmd1, DELIM);
+        while(token) {
+            args1[i++] = token;
+            token = strtok(NULL, DELIM);
+        }
+        args1[i] = NULL;
+
+        execvp(args1[0], args1);
+        perror("exec failed");
+        exit(1);
+    }
+
+    if (fork() == 0) { // Second command
+        dup2(fd[0], STDIN_FILENO);
+        close(fd[0]);
+        close(fd[1]);
+
+        char *args2[MAX];
+        int i = 0;
+        char *token = strtok(cmd2, DELIM);
+        while(token) {
+            args2[i++] = token;
+            token = strtok(NULL, DELIM);
+        }
+        args2[i] = NULL;
+
+        execvp(args2[0], args2);
+        perror("exec failed");
+        exit(1);
+    }
+
+    close(fd[0]);
+    close(fd[1]);
+    wait(NULL);
+    wait(NULL);
+}
